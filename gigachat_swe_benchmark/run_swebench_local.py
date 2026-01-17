@@ -52,12 +52,13 @@ def setup_repo(instance: dict, work_dir: Path) -> Path:
     if repo_dir.exists():
         shutil.rmtree(repo_dir)
 
-    print(f"  Cloning {repo}...")
+    print(f"  Cloning {repo} (full clone for old commits)...")
     subprocess.run(
-        ["git", "clone", "--depth", "100", f"https://github.com/{repo}.git", str(repo_dir)],
+        ["git", "clone", f"https://github.com/{repo}.git", str(repo_dir)],
         check=True,
         capture_output=True,
-        text=True
+        text=True,
+        timeout=600  # 10 min timeout for large repos
     )
 
     print(f"  Checking out {base_commit[:8]}...")
