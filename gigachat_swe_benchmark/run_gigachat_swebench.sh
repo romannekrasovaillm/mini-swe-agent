@@ -139,8 +139,9 @@ check_container_runtime() {
 
     # Check for Podman first (preferred for containerized environments)
     if command -v podman &> /dev/null; then
-        if podman info &> /dev/null 2>&1; then
-            log_success "Podman is available"
+        PODMAN_VERSION=$(podman --version 2>/dev/null || true)
+        if [ -n "$PODMAN_VERSION" ]; then
+            log_success "Podman is available: $PODMAN_VERSION"
             CONTAINER_RUNTIME="podman"
             return 0
         fi
