@@ -1,158 +1,241 @@
-# GigaChat3-10B-A1.8B SWE-bench Benchmark
+# GigaChat3-10B SWE-bench Benchmark
 
-Полный пайплайн для оценки модели [GigaChat3-10B-A1.8B](https://huggingface.co/ai-sage/GigaChat3-10B-A1.8B) на бенчмарке SWE-bench с использованием mini-swe-agent.
+Бенчмарк модели [GigaChat3-10B-A1.8B](https://huggingface.co/ai-sage/GigaChat3-10B-A1.8B) на [SWE-bench](https://www.swebench.com/) с использованием [mini-swe-agent](https://github.com/klieret/mini-swe-agent).
 
 ## Требования
 
-- **GPU**: NVIDIA A100 (40GB+) или аналогичная
-- **Docker**: Для запуска SWE-bench контейнеров
+- **GPU**: NVIDIA A100 40GB+ (или аналог с 40GB+ VRAM)
 - **Python**: 3.10+
 - **CUDA**: 12.0+
+- **RAM**: 32GB+
+- **Диск**: 50GB+ свободного места
 
 ## Быстрый старт
 
+### 1. Клонирование репозитория
+
 ```bash
-# Сделать скрипт исполняемым
-chmod +x run_gigachat_swebench.sh
+git clone https://github.com/YOUR_USERNAME/gigachat-swe-benchmark.git
+cd gigachat-swe-benchmark
+```
 
-# Запуск полного бенчмарка (скачивание модели + оценка + аналитика)
-./run_gigachat_swebench.sh
+### 2. Создание виртуального окружения
 
-# Запуск на первых 10 инстансах SWE-bench Lite
-./run_gigachat_swebench.sh --subset lite --slice 0:10
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+```
 
-# Запуск с параллельными воркерами
-./run_gigachat_swebench.sh --subset lite --workers 4 --output ./my_results
+### 3. Установка зависимостей
+
+```bash
+# Установить mini-swe-agent
+pip install -e .
+
+# Установить vLLM для inference
+pip install vllm>=0.6.0 huggingface_hub transformers
+
+# Установить зависимости для аналитики
+pip install pandas matplotlib pyyaml
+```
+
+### 4. Скачивание модели
+
+```bash
+python3 -c "
+from huggingface_hub import snapshot_download
+snapshot_download('ai-sage/GigaChat3-10B-A1.8B')
+"
+```
+
+### 5. Запуск vLLM сервера
+
+```bash
+python3 -m vllm.entrypoints.openai.api_server \
+    --model ai-sage/GigaChat3-10B-A1.8B \
+    --port 8000 \
+    --max-model-len 32768 \
+    --gpu-memory-utilization 0.90 \
+    --served-model-name gigachat-10b \
+    --trust-remote-code \
+    --enforce-eager &
+
+# Подождать запуска (2-5 минут)
+sleep 120
+
+# Проверить что сервер работает
+curl http://localhost:8000/health
+```
+
+### 6. Запуск бенчмарка
+
+```bash
+cd gigachat_swe_benchmark
+
+# Тест на 5 инстансах (dev split)
+python3 run_swebench_local.py --subset lite --slice 0:5
+
+# Полный бенчмарк (300 инстансов, test split)
+python3 run_swebench_local.py --subset lite --split test --slice 0:300
+```
+
+### 7. Анализ результатов
+
+```bash
+python3 analyze_results.py ./gigachat_local_results --all
+```
+
+## Структура проекта
+
+```
+gigachat_swe_benchmark/
+├── run_swebench_local.py       # Запуск SWE-bench без контейнеров
+├── run_gigachat_swebench.sh    # Bash-скрипт полного пайплайна (требует Docker)
+├── gigachat_swebench_local.yaml # Конфиг для локального запуска
+├── gigachat_swebench.yaml      # Конфиг для Docker-запуска
+├── model_registry.json         # Регистрация модели в LiteLLM
+├── analyze_results.py          # Анализатор результатов
+├── start_vllm_server.py        # Скрипт запуска vLLM
+└── README.md                   # Документация
+```
+
+## Результаты
+
+После запуска результаты сохраняются в `gigachat_local_results/`:
+
+```
+gigachat_local_results/
+├── preds.json                  # Предсказания (патчи) в формате SWE-bench
+├── analysis_report.json        # JSON отчет
+├── results_detailed.csv        # Детальные результаты
+├── results_summary.csv         # Сводка по репозиториям
+├── plots/                      # Графики
+│   ├── exit_status_distribution.png
+│   ├── step_distribution.png
+│   └── repo_performance.png
+└── {instance_id}/              # Траектории по инстансам
+    └── {instance_id}.traj.json
 ```
 
 ## Параметры запуска
 
 | Параметр | Описание | По умолчанию |
 |----------|----------|--------------|
-| `--subset` | Датасет SWE-bench (lite, verified, full) | lite |
-| `--split` | Сплит датасета (dev, test) | dev |
-| `--slice` | Срез инстансов (например, 0:10) | все |
-| `--workers` | Количество параллельных воркеров | 1 |
-| `--output` | Директория результатов | ./gigachat_results |
-| `--skip-model` | Пропустить скачивание модели | false |
-| `--skip-deps` | Пропустить установку зависимостей | false |
-| `--gpu-util` | Утилизация памяти GPU (0.0-1.0) | 0.90 |
-| `--tp` | Tensor parallel size | 1 |
+| `--subset` | Датасет: `lite`, `verified`, `full` | `lite` |
+| `--split` | Сплит: `dev` (23), `test` (300) | `dev` |
+| `--slice` | Срез инстансов (например `0:10`) | все |
+| `--filter` | Фильтр по regex | - |
+| `-m` | Переопределить модель | - |
+| `-c` | Путь к конфигу | `gigachat_swebench_local.yaml` |
+| `-o` | Директория результатов | `gigachat_local_results` |
 
-## Структура файлов
+## Деплой результатов в удалённый репозиторий
 
-```
-gigachat_swe_benchmark/
-├── run_gigachat_swebench.sh   # Главный скрипт запуска
-├── gigachat_swebench.yaml     # Конфигурация для mini-swe-agent
-├── model_registry.json        # Регистрация модели в LiteLLM
-├── start_vllm_server.py       # Скрипт запуска vLLM сервера
-├── analyze_results.py         # Анализатор результатов
-└── README.md                  # Документация
-```
-
-## Результаты
-
-После выполнения в директории результатов будут:
-
-```
-gigachat_results/
-├── preds.json              # Предсказания в формате SWE-bench
-├── analysis_report.json    # JSON отчет аналитики
-├── results_detailed.csv    # Детальные результаты по инстансам
-├── results_summary.csv     # Сводка по репозиториям
-├── vllm_server.log         # Логи vLLM сервера
-├── exit_statuses_*.yaml    # Статусы завершения
-├── plots/                  # Визуализации
-│   ├── exit_status_distribution.png
-│   ├── step_distribution.png
-│   ├── repo_performance.png
-│   └── error_categories.png
-└── {instance_id}/          # Траектории по инстансам
-    └── {instance_id}.traj.json
-```
-
-## Запуск отдельных компонентов
-
-### Только vLLM сервер
+### Создание нового репозитория
 
 ```bash
-python start_vllm_server.py --model-id ai-sage/GigaChat3-10B-A1.8B --port 8000
+# 1. Создайте репозиторий на GitHub (через веб-интерфейс или gh cli)
+gh repo create gigachat-swe-results --public --description "GigaChat SWE-bench results"
+
+# Или вручную на https://github.com/new
 ```
 
-### Только анализ результатов
+### Загрузка результатов
 
 ```bash
-python analyze_results.py ./gigachat_results --all
+# 2. Перейти в директорию с результатами
+cd gigachat_local_results
+
+# 3. Инициализировать git
+git init
+git add .
+git commit -m "GigaChat3-10B SWE-bench results - $(date +%Y-%m-%d)"
+
+# 4. Добавить remote и запушить
+git remote add origin https://github.com/YOUR_USERNAME/gigachat-swe-results.git
+git branch -M main
+git push -u origin main
 ```
 
-### Только SWE-bench (при запущенном vLLM)
+### Загрузка проекта (без модели)
 
 ```bash
-python -m minisweagent.run.extra.swebench \
-    --subset lite \
-    --split dev \
-    --config gigachat_swebench.yaml \
-    --output ./results
+# Из корня проекта mini-swe-agent
+cd /path/to/mini-swe-agent
+
+# Создать новый репозиторий для проекта
+gh repo create gigachat-swe-benchmark --public
+
+# Скопировать только нужные файлы (без модели и результатов)
+mkdir -p /tmp/gigachat-deploy
+cp -r gigachat_swe_benchmark/*.py /tmp/gigachat-deploy/
+cp -r gigachat_swe_benchmark/*.yaml /tmp/gigachat-deploy/
+cp -r gigachat_swe_benchmark/*.json /tmp/gigachat-deploy/
+cp -r gigachat_swe_benchmark/*.sh /tmp/gigachat-deploy/
+cp -r gigachat_swe_benchmark/README.md /tmp/gigachat-deploy/
+
+# Запушить
+cd /tmp/gigachat-deploy
+git init
+git add .
+git commit -m "Initial commit: GigaChat SWE-bench benchmark setup"
+git remote add origin https://github.com/YOUR_USERNAME/gigachat-swe-benchmark.git
+git branch -M main
+git push -u origin main
 ```
-
-## Валидация результатов с SWE-bench
-
-После получения предсказаний можно запустить официальную оценку SWE-bench:
-
-```bash
-# Установка SWE-bench
-pip install swebench
-
-# Запуск оценки
-python -m swebench.harness.run_evaluation \
-    --predictions_path ./gigachat_results/preds.json \
-    --swe_bench_tasks lite \
-    --run_id gigachat_eval
-```
-
-## Особенности модели
-
-GigaChat3-10B-A1.8B - это:
-- Mixture of Experts (MoE) модель
-- 10B параметров всего, ~1.8B активных
-- Instruct-tuned для диалогов на русском и английском
-- Требует ~20-25GB VRAM на A100
 
 ## Baseline сравнение
 
-Референсные значения для SWE-bench Lite:
-
-| Модель | Resolved% |
-|--------|-----------|
+| Модель | SWE-bench Lite Resolved% |
+|--------|--------------------------|
 | Claude 3.5 Sonnet | 49.0% |
 | GPT-4o | 38.0% |
 | Claude 3 Opus | 22.0% |
 | Llama 3.1 405B | 14.0% |
 | DeepSeek-V2 | 12.0% |
 | Mixtral 8x22B | 4.3% |
+| **GigaChat3-10B** | **TBD** |
 
 ## Troubleshooting
 
-### GPU Out of Memory
-```bash
-# Уменьшить утилизацию GPU памяти
-./run_gigachat_swebench.sh --gpu-util 0.80
+### CUDA Out of Memory
 
-# Или уменьшить max_model_len в gigachat_swebench.yaml
+```bash
+# Уменьшить контекст
+--max-model-len 16384
+
+# Или уменьшить использование памяти
+--gpu-memory-utilization 0.80
 ```
 
-### Docker permission denied
-```bash
-sudo usermod -aG docker $USER
-newgrp docker
-```
+### vLLM не запускается
 
-### vLLM server не запускается
 ```bash
-# Проверить логи
-tail -100 ./gigachat_results/vllm_server.log
-
-# Проверить GPU
+# Проверить CUDA
 nvidia-smi
+python3 -c "import torch; print(torch.cuda.is_available())"
+
+# Проверить версию vLLM
+pip show vllm
 ```
+
+### Ошибка Context Window Exceeded
+
+Уменьшите `max_tokens` в конфиге `gigachat_swebench_local.yaml`:
+```yaml
+model:
+  model_kwargs:
+    max_tokens: 1024  # уменьшить
+```
+
+## Лицензия
+
+MIT
+
+## Ссылки
+
+- [GigaChat3-10B-A1.8B](https://huggingface.co/ai-sage/GigaChat3-10B-A1.8B)
+- [SWE-bench](https://www.swebench.com/)
+- [mini-swe-agent](https://github.com/klieret/mini-swe-agent)
+- [vLLM](https://github.com/vllm-project/vllm)
