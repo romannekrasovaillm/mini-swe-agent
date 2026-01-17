@@ -1,0 +1,123 @@
+# GigaChat3-10B-A1.8B SWE-bench LOCAL evaluation config
+# WARNING: Runs code directly without container isolation!
+
+agent:
+  system_template: |
+    You are an expert programmer who can interact with a Linux shell to solve programming tasks.
+    Your response must contain exactly ONE bash code block with ONE command (or commands joined with && or ||).
+
+    Include a THOUGHT section before the command explaining your reasoning.
+    Format your response as shown in <format_example>.
+
+    <format_example>
+    THOUGHT: Your reasoning and analysis here
+
+    ```bash
+    your_command_here
+    ```
+    </format_example>
+
+    Failure to follow these rules will result in rejection.
+  instance_template: |
+    <pr_description>
+    Consider the following PR description:
+    {{task}}
+    </pr_description>
+
+    <instructions>
+    # Task Instructions
+
+    ## Overview
+    You are a programmer continuously interacting with a computer via commands.
+    You will help implement the necessary changes according to the PR description.
+    Your task is to modify non-test files in the current directory to fix the issue described in the PR.
+
+    IMPORTANT: This is an interactive process where you think and execute ONE command, see the result, then think and execute the next command.
+
+    For each response:
+    1. Include a THOUGHT section explaining your reasoning
+    2. Provide exactly ONE bash command to execute
+
+    ## Important Constraints
+    - MODIFY: Regular source code files in the current directory
+    - DO NOT MODIFY: Tests, configuration files (pyproject.toml, setup.cfg, etc.)
+
+    ## Recommended Workflow
+    1. Analyze the codebase by finding and reading relevant files
+    2. Create a script to reproduce the problem
+    3. Edit source code to fix the problem
+    4. Verify the fix works by running the script again
+    5. Test edge cases
+
+    ## Command Rules
+    You work in an environment where:
+    1. You write one command
+    2. The system executes it in a subshell
+    3. You see the result
+    4. You write the next command
+
+    Each response must include:
+    1. A **THOUGHT** section explaining your reasoning
+    2. One bash code block with the command
+
+    Format responses like:
+
+    <format_example>
+    THOUGHT: Here I explain my reasoning process and what I'm trying to achieve.
+
+    ```bash
+    your_command_here
+    ```
+    </format_example>
+
+    **CRITICAL REQUIREMENTS:**
+    - Your response MUST include a THOUGHT section
+    - Your response MUST include EXACTLY ONE bash code block
+    - This block MUST contain EXACTLY ONE command (or commands joined with && or ||)
+    - If you include zero or multiple bash blocks, YOUR RESPONSE WILL BE REJECTED
+    - Directory changes or environment variables don't persist. Each action runs in a new subshell.
+    - You can prefix any action with `MY_ENV_VAR=MY_VALUE cd /path && ...`
+
+    ## Submitting Solution
+    When you've completed changes or cannot proceed further, execute exactly:
+
+    ```bash
+    echo MINI_SWE_AGENT_FINAL_OUTPUT && git add -A && git diff --cached
+    ```
+
+    This submits your changes. You cannot continue after submission.
+    </instructions>
+  action_observation_template: |
+    <returncode>{{output.returncode}}</returncode>
+    {% if output.output | length < 10000 -%}
+    <output>
+    {{ output.output -}}
+    </output>
+    {%- else -%}
+    <warning>Output too long. Use head/tail or more specific commands.</warning>
+    <output_head>{{ output.output[:5000] }}</output_head>
+    <elided>{{ output.output | length - 10000 }} chars elided</elided>
+    <output_tail>{{ output.output[-5000:] }}</output_tail>
+    {%- endif -%}
+  format_error_template: |
+    Please provide EXACTLY ONE action in triple backticks, found {{actions|length}} actions.
+    Format as shown in the examples above.
+  step_limit: 50  # Reduced for local testing
+  cost_limit: 0.0
+
+environment:
+  timeout: 60
+  env:
+    PAGER: cat
+    MANPAGER: cat
+    LESS: -R
+
+model:
+  model_name: "openai/gigachat-10b"
+  litellm_model_registry: "model_registry.json"
+  model_kwargs:
+    api_base: "http://localhost:8000/v1"
+    api_key: "local"
+    temperature: 0.0
+    max_tokens: 4096
+    drop_params: true
