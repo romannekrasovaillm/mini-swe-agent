@@ -15,6 +15,7 @@ This script:
 
 import argparse
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -22,6 +23,7 @@ import sys
 import tempfile
 import time
 import traceback
+from datetime import datetime
 from pathlib import Path
 
 import yaml
@@ -40,6 +42,78 @@ DATASET_MAPPING = {
     "lite": "princeton-nlp/SWE-Bench_Lite",
     "_test": "klieret/swe-bench-dummy-test-dataset",
 }
+
+# Setup logging
+def setup_logging(output_dir: Path):
+    """Setup logging to file and console."""
+    log_file = output_dir / f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+    # Create formatter
+    formatter = logging.Formatter(
+        '%(asctime)s | %(levelname)s | %(message)s',
+        datefmt='%H:%M:%S'
+    )
+
+    # File handler
+    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(formatter)
+
+    # Root logger
+    logger = logging.getLogger('swebench')
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+    return logger, log_file
+
+
+def truncate_text(text: str, max_len: int = 500) -> str:
+    """Truncate text with ellipsis."""
+    if len(text) <= max_len:
+        return text
+    return text[:max_len] + f"... [{len(text) - max_len} chars truncated]"
+
+
+class LoggingAgent(DefaultAgent):
+    """Agent with logging of model responses."""
+
+    def __init__(self, *args, logger=None, instance_id="", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.logger = logger or logging.getLogger('swebench')
+        self.instance_id = instance_id
+        self.step_count = 0
+
+    def step(self) -> dict:
+        """Override step to log model responses."""
+        self.step_count += 1
+        self.logger.info(f"[{self.instance_id}] Step {self.step_count} starting...")
+
+        # Call parent step
+        result = super().step()
+
+        # Log the last message (model response)
+        if self.messages:
+            last_msg = self.messages[-1]
+            if last_msg.get("role") == "assistant":
+                content = last_msg.get("content", "")
+                self.logger.info(f"[{self.instance_id}] Step {self.step_count} MODEL RESPONSE:")
+                self.logger.info("-" * 40)
+                # Print to console as well
+                print(f"\n{'='*60}")
+                print(f"STEP {self.step_count} - MODEL RESPONSE:")
+                print("-" * 60)
+                print(truncate_text(content, 1000))
+                print("=" * 60)
+                # Full response to log file
+                self.logger.debug(f"Full response:\n{content}")
+
+        return result
 
 
 def setup_repo(instance: dict, work_dir: Path) -> Path:
@@ -117,12 +191,16 @@ def process_instance(
     model_name: str | None,
     work_dir: Path,
     output_dir: Path,
+    logger=None,
 ) -> dict:
     """Process a single SWE-bench instance."""
     instance_id = instance["instance_id"]
+    logger = logger or logging.getLogger('swebench')
+
     print(f"\n{'='*60}")
     print(f"Processing: {instance_id}")
     print(f"{'='*60}")
+    logger.info(f"Starting instance: {instance_id}")
 
     result = {
         "instance_id": instance_id,
@@ -148,13 +226,31 @@ def process_instance(
 
         env = LocalEnvironment(**env_config)
 
-        # Create agent
+        # Get and log task
+        task = instance["problem_statement"]
+
+        # Log task preview
+        print(f"\n{'='*60}")
+        print("TASK (problem_statement):")
+        print("-" * 60)
+        print(truncate_text(task, 800))
+        print("=" * 60)
+
+        logger.info(f"[{instance_id}] TASK preview: {truncate_text(task, 500)}")
+        logger.debug(f"[{instance_id}] Full task:\n{task}")
+
+        # Create agent with logging
         agent_config = config.get("agent", {})
-        agent = DefaultAgent(model, env, **agent_config)
+        agent = LoggingAgent(
+            model, env,
+            logger=logger,
+            instance_id=instance_id,
+            **agent_config
+        )
 
         # Run agent
-        task = instance["problem_statement"]
         print(f"\nRunning agent on task...")
+        logger.info(f"[{instance_id}] Agent starting...")
         exit_status, agent_result = agent.run(task)
 
         # Get patch
@@ -164,10 +260,25 @@ def process_instance(
         result["exit_status"] = exit_status
         result["steps"] = model.n_calls
 
-        print(f"\nCompleted: {instance_id}")
+        # Log completion
+        print(f"\n{'='*60}")
+        print(f"Completed: {instance_id}")
         print(f"  Exit status: {exit_status}")
         print(f"  Steps: {model.n_calls}")
         print(f"  Patch size: {len(patch)} chars")
+
+        if patch:
+            print(f"\nGENERATED PATCH:")
+            print("-" * 60)
+            print(truncate_text(patch, 1000))
+            print("=" * 60)
+            logger.info(f"[{instance_id}] Generated patch ({len(patch)} chars):")
+            logger.debug(f"[{instance_id}] Full patch:\n{patch}")
+        else:
+            print(f"\n[WARNING] No patch generated!")
+            logger.warning(f"[{instance_id}] No patch generated")
+
+        logger.info(f"[{instance_id}] Completed: status={exit_status}, steps={model.n_calls}, patch_size={len(patch)}")
 
     except Exception as e:
         print(f"\nError processing {instance_id}: {e}")
@@ -275,6 +386,12 @@ def main():
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Setup logging
+    logger, log_file = setup_logging(output_dir)
+    logger.info(f"Starting SWE-bench run: {len(instances)} instances")
+    logger.info(f"Subset: {args.subset}, Split: {args.split}")
+    print(f"Log file: {log_file}")
+
     if args.work_dir:
         work_dir = Path(args.work_dir)
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -290,13 +407,15 @@ def main():
 
     for i, instance in enumerate(instances):
         print(f"\n[{i+1}/{len(instances)}]", end="")
+        logger.info(f"Processing instance {i+1}/{len(instances)}: {instance['instance_id']}")
 
         result = process_instance(
             instance,
             config,
             args.model,
             work_dir,
-            output_dir
+            output_dir,
+            logger=logger
         )
 
         results.append(result)
@@ -321,6 +440,14 @@ def main():
     print(f"Completed: {completed} ({completed/len(results)*100:.1f}%)")
     print(f"With patch: {with_patch} ({with_patch/len(results)*100:.1f}%)")
     print(f"\nResults saved to: {output_dir}")
+    print(f"Log file: {log_file}")
+
+    logger.info("="*60)
+    logger.info("FINAL SUMMARY")
+    logger.info(f"Total: {len(results)}")
+    logger.info(f"Completed: {completed} ({completed/len(results)*100:.1f}%)")
+    logger.info(f"With patch: {with_patch} ({with_patch/len(results)*100:.1f}%)")
+    logger.info("="*60)
 
     # Cleanup work dir if temp
     if not args.work_dir:
