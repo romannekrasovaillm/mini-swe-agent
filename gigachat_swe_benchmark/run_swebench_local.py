@@ -93,27 +93,90 @@ class LoggingAgent(DefaultAgent):
         """Override step to log model responses."""
         self.step_count += 1
         self.logger.info(f"[{self.instance_id}] Step {self.step_count} starting...")
+        return super().step()
 
-        # Call parent step
-        result = super().step()
+    def query(self) -> dict:
+        """Override query to log model response."""
+        response = super().query()
+        content = response.get("content", "")
 
-        # Log the last message (model response)
-        if self.messages:
-            last_msg = self.messages[-1]
-            if last_msg.get("role") == "assistant":
-                content = last_msg.get("content", "")
-                self.logger.info(f"[{self.instance_id}] Step {self.step_count} MODEL RESPONSE:")
-                self.logger.info("-" * 40)
-                # Print to console as well
-                print(f"\n{'='*60}")
-                print(f"STEP {self.step_count} - MODEL RESPONSE:")
-                print("-" * 60)
-                print(truncate_text(content, 1000))
-                print("=" * 60)
-                # Full response to log file
-                self.logger.debug(f"Full response:\n{content}")
+        # Log to console
+        print(f"\n{'='*60}")
+        print(f"[{self.instance_id}] STEP {self.step_count} - MODEL RESPONSE:")
+        print("-" * 60)
+        print(content[:2000] if len(content) > 2000 else content)
+        if len(content) > 2000:
+            print(f"... [{len(content) - 2000} chars truncated]")
+        print("=" * 60)
 
-        return result
+        # Log to file
+        self.logger.info(f"[{self.instance_id}] Step {self.step_count} MODEL RESPONSE ({len(content)} chars)")
+        self.logger.debug(f"[{self.instance_id}] Full response:\n{content}")
+
+        return response
+
+    def parse_action(self, response: dict) -> dict:
+        """Override parse_action to log extracted command."""
+        import re
+        actions = re.findall(r"```bash\n(.*?)\n```", response["content"], re.DOTALL)
+
+        if len(actions) == 1:
+            cmd = actions[0].strip()
+            # Log command
+            print(f"\n>>> EXTRACTED COMMAND:")
+            print("-" * 40)
+            print(cmd[:500] if len(cmd) > 500 else cmd)
+            if len(cmd) > 500:
+                print(f"... [{len(cmd) - 500} chars truncated]")
+            print("-" * 40)
+            self.logger.info(f"[{self.instance_id}] Extracted command: {cmd[:200]}...")
+            return {"action": cmd, **response}
+
+        # No valid action found
+        print(f"\n[!] FORMAT ERROR: Found {len(actions)} bash blocks (expected 1)")
+        if actions:
+            for i, a in enumerate(actions):
+                print(f"  Block {i+1}: {a[:100]}...")
+        self.logger.warning(f"[{self.instance_id}] Format error: {len(actions)} bash blocks")
+
+        from minisweagent.agents.default import FormatError
+        raise FormatError(self.render_template(self.config.format_error_template, actions=actions))
+
+    def execute_action(self, action: dict) -> dict:
+        """Override execute_action to log output."""
+        import subprocess
+        try:
+            output = self.env.execute(action["action"])
+
+            # Log output
+            out_text = output.get("output", "")
+            print(f"\n<<< COMMAND OUTPUT ({len(out_text)} chars):")
+            print("-" * 40)
+            print(out_text[:1000] if len(out_text) > 1000 else out_text)
+            if len(out_text) > 1000:
+                print(f"... [{len(out_text) - 1000} chars truncated]")
+            print("-" * 40)
+            self.logger.info(f"[{self.instance_id}] Command output: {len(out_text)} chars")
+            self.logger.debug(f"[{self.instance_id}] Full output:\n{out_text}")
+
+        except subprocess.TimeoutExpired as e:
+            out = e.output.decode("utf-8", errors="replace") if e.output else ""
+            print(f"\n[!] COMMAND TIMEOUT")
+            self.logger.warning(f"[{self.instance_id}] Command timeout")
+            from minisweagent.agents.default import ExecutionTimeoutError
+            raise ExecutionTimeoutError(
+                self.render_template(self.config.timeout_template, action=action, output=out)
+            )
+        except TimeoutError:
+            print(f"\n[!] COMMAND TIMEOUT")
+            self.logger.warning(f"[{self.instance_id}] Command timeout")
+            from minisweagent.agents.default import ExecutionTimeoutError
+            raise ExecutionTimeoutError(
+                self.render_template(self.config.timeout_template, action=action, output="")
+            )
+
+        self.has_finished(output)
+        return output
 
 
 def setup_repo(instance: dict, work_dir: Path) -> Path:
