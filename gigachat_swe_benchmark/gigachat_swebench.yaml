@@ -218,6 +218,7 @@ agent:
 environment:
   cwd: "/testbed"
   timeout: 120  # увеличенный таймаут для локальной модели
+  executable: podman  # использовать Podman вместо Docker
   env:
     PAGER: cat
     MANPAGER: cat

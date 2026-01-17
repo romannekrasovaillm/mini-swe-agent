@@ -27,7 +27,7 @@
 #
 # Requirements:
 #   - NVIDIA GPU (A100 recommended, 40GB+ VRAM)
-#   - Docker (for SWE-bench containers)
+#   - Podman or Docker (for SWE-bench containers)
 #   - Python 3.10+
 #   - CUDA 12.0+
 #
@@ -134,20 +134,31 @@ check_gpu() {
     done
 }
 
-check_docker() {
-    log_info "Checking Docker availability..."
-    if ! command -v docker &> /dev/null; then
-        log_error "Docker not found. Docker is required for SWE-bench evaluation."
-        exit 1
+check_container_runtime() {
+    log_info "Checking container runtime availability..."
+
+    # Check for Podman first (preferred for containerized environments)
+    if command -v podman &> /dev/null; then
+        if podman info &> /dev/null 2>&1; then
+            log_success "Podman is available"
+            CONTAINER_RUNTIME="podman"
+            return 0
+        fi
     fi
 
-    if ! docker info &> /dev/null; then
-        log_error "Docker daemon not running or permission denied."
-        log_info "Try: sudo systemctl start docker && sudo usermod -aG docker $USER"
-        exit 1
+    # Fallback to Docker
+    if command -v docker &> /dev/null; then
+        if docker info &> /dev/null 2>&1; then
+            log_success "Docker is available"
+            CONTAINER_RUNTIME="docker"
+            return 0
+        fi
     fi
 
-    log_success "Docker is available"
+    log_error "No container runtime found (Podman or Docker required)"
+    log_info "Install Podman: apt-get install -y podman"
+    log_info "Or install Docker: https://docs.docker.com/engine/install/"
+    exit 1
 }
 
 check_python() {
@@ -375,7 +386,7 @@ main() {
     # Pre-flight checks
     log_info "Running pre-flight checks..."
     check_gpu
-    check_docker
+    check_container_runtime
     check_python
 
     # Setup
