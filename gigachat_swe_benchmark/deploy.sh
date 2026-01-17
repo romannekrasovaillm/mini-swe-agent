@@ -3,10 +3,11 @@
 # Deploy GigaChat SWE-bench benchmark to a new repository
 #
 # Usage:
-#   ./deploy.sh <github-username> [repo-name]
+#   ./deploy.sh <github-username> [repo-name] [--force]
 #
 # Example:
 #   ./deploy.sh myusername gigachat-swe-benchmark
+#   ./deploy.sh myusername gigachat-swe-benchmark --force  # overwrite existing remote
 #
 
 set -e
@@ -22,10 +23,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Parse arguments
 GITHUB_USER="${1:-}"
 REPO_NAME="${2:-gigachat-swe-benchmark}"
+FORCE_PUSH="${3:-}"
 
 if [ -z "$GITHUB_USER" ]; then
     echo -e "${RED}Error: GitHub username required${NC}"
-    echo "Usage: ./deploy.sh <github-username> [repo-name]"
+    echo "Usage: ./deploy.sh <github-username> [repo-name] [--force]"
     exit 1
 fi
 
@@ -108,7 +110,21 @@ echo "Create it at: https://github.com/new"
 echo ""
 read -p "Press Enter when repository is created (or Ctrl+C to cancel)..."
 
-git push -u origin main
+if [ "$FORCE_PUSH" = "--force" ] || [ "$FORCE_PUSH" = "-f" ]; then
+    echo -e "${YELLOW}Force pushing (will overwrite remote content)...${NC}"
+    git push --force -u origin main
+else
+    git push -u origin main || {
+        echo ""
+        echo -e "${YELLOW}Push failed. If remote has existing content, run:${NC}"
+        echo -e "  cd $DEPLOY_DIR"
+        echo -e "  git push --force -u origin main"
+        echo ""
+        echo -e "Or re-run with --force flag:"
+        echo -e "  ./deploy.sh $GITHUB_USER $REPO_NAME --force"
+        exit 1
+    }
+fi
 
 echo ""
 echo -e "${GREEN}============================================================${NC}"
